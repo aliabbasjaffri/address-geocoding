@@ -15,9 +15,9 @@ class GeocodeAddresses:
     def __init__(self) -> None:
         self.gmaps = googlemaps.Client(key=API_KEY)
 
-    def _geocode_address(self, address: str) -> dict:
+    def _geocode_address(self, address: str, city: str) -> dict:
         geocode_result = self.gmaps.geocode(
-            address, components={"locality": "München", "country": "DE"}
+            address, components={"locality": city, "country": "DE"}
         )
 
         # print(geocode_result)
@@ -75,7 +75,7 @@ class GeocodeAddresses:
                     address = (
                         row["Name"] + " " + row["Address"] + " " + str(row["Postcode"])
                     )
-                    point = self._geocode_address(address=address)
+                    point = self._geocode_address(address=address, city=row["City"])
                     row["Postcode"] = int(row["Postcode"])
 
                 df.at[index, "lat"] = point["lat"]
