@@ -1,84 +1,94 @@
 import os
-import json
-import urllib
-import requests
+import googlemaps
 import pandas as pd
-from geopy.geocoders import Nominatim
-
-base_url = "https://maps.googleapis.com/maps/api/geocode/json?"
-ADDRESS = "Heiliggeiststraße 1, 80331 München"
-
-def google_maps_geocode_address() -> None:
-    parameters = {
-        "address": ADDRESS,
-        "key": str(os.environ["AUTH_KEY"])
-    }
-    
-    print(f"{base_url}{urllib.parse.urlencode(parameters)}")
-    r = requests.get(f"{base_url}{urllib.parse.urlencode(parameters)}")
-    data = json.loads(r.content)
-    print(data)
-
-    # get location cordinates; lat and long
-    print(data.get("results")[0].get("geometry").get("location"))
+from pathlib import Path
+from dotenv import load_dotenv
 
 
-def geopy_geocode_address() -> None:
-    # https://geopy.readthedocs.io/en/stable/
-    
-    geolocator = Nominatim(user_agent="cafe_around_the_corner")
-    data = geolocator.geocode(ADDRESS)
+env_path = Path(".") / ".env"
+load_dotenv(dotenv_path=env_path)
 
-    # check latitude, longitude
-    print(f"{data.raw.get('lat')}, {data.raw.get('lon')}")
-    
-    # validation check
-    print(geolocator.reverse(f"{data.raw.get('lat')}, {data.raw.get('lon')}"))
+API_KEY = os.environ.get("API_KEY")
 
-def geopy_get_bulk_locations() -> None:
-    try:
-        geolocator = Nominatim(user_agent="cafe_around_the_corner")
 
-        # addresses.csv contains list of cafe addresses, with name
-        df = pd.read_csv("addresses.csv")
-        
-        # general cleanup for any whitespace
-        df.rename(columns=lambda x: x.strip(), inplace=True)
-        df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+class GeocodeAddresses:
+    def __init__(self) -> None:
+        self.gmaps = googlemaps.Client(key=API_KEY)
 
-        # applying geocode for all addresses
-        df["loc"] = df["Address"].apply(geolocator.geocode)
-        df["point"]= df["loc"].apply(lambda loc: tuple(loc.point) if loc else None)
+    def _geocode_address(self, address: str) -> dict:
+        geocode_result = self.gmaps.geocode(
+            address, components={"locality": "München", "country": "DE"}
+        )
 
-        # creating columns for latitude, longitude and altitude
-        df[['lat', 'lon', 'altitude']] = pd.DataFrame(df['point'].to_list(), index=df.index)
-        
-        # saving information to a csv
-        df.to_csv("addresses_formatted.csv", index=False, encoding="utf-8")
-    except Exception as e:
-        print(f"Exception occurred: {e}")
+        # print(geocode_result)
+        # print(geocode_result[0]["formatted_address"])
 
-def clean_addresses() -> None:
-    df = pd.read_csv("addresses_formatted.csv")
+        return geocode_result[0]["geometry"]["location"]
 
-    # getting rid of unnecessary columns
-    df.drop(columns=["loc", "point", "altitude"], inplace=True)
-    
-    # extracting postcode from the address
-    df["PostCode"] = df["Address"].apply(lambda x: x.split(" ")[-2])
-    
-    # sorting addresses as per postcode
-    df.sort_values("PostCode", inplace=True)
-    print(df.to_dict("records"))
-    
-    # writing all the sorted addresses to json
-    df.to_json("data.json", orient="records", lines=True)
+    def _find_location(self, address: str, city: str) -> dict:
+        geocode_result = self.gmaps.find_place(
+            address, "textquery", location_bias=f"circle:500@{city}"
+        )
+        place_id = geocode_result["candidates"][0]["place_id"]
 
-    df.to_csv("final_addresses.csv", index=False, encoding="utf-8")
+        # Retrieve place details
+        place_details = self.gmaps.place(
+            place_id,
+            # fields=["formatted_address", "geometry/location", "website", "review"],
+            fields=["formatted_address", "geometry/location", "website"],
+        )
+        print(place_details)
+
+        return place_details
+
+    def geocode_all_addresses(self) -> None:
+        try:
+            # addresses.csv contains list of cafe addresses, with name
+            df = pd.read_csv("addresses.csv", header=None)
+
+            # rename columns
+            df.columns = ["Name", "Address", "Postcode", "City"]
+
+            print(df.tail(n=5))
+
+            # general cleanup for any whitespace
+            df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+
+            # combine column values with a space in between them
+            for index, row in df.iterrows():
+                if row.isna().any():
+                    complete_address = self._find_location(
+                        address=row["Name"], city=row["City"]
+                    )
+                    df.at[index, "Address"] = complete_address["result"][
+                        "formatted_address"
+                    ]
+                    df.at[index, "Postcode"] = int(
+                        complete_address["result"]["formatted_address"]
+                        .split(",")[-2]
+                        .strip()
+                        .split(" ")[0]
+                    )
+                    point = complete_address["result"]["geometry"]["location"]
+
+                else:
+                    address = (
+                        row["Name"] + " " + row["Address"] + " " + str(row["Postcode"])
+                    )
+                    point = self._geocode_address(address=address)
+                    row["Postcode"] = int(row["Postcode"])
+
+                df.at[index, "lat"] = point["lat"]
+                df.at[index, "lon"] = point["lng"]
+
+                print(f"Geocoded address: {row['Name']}")
+
+            df.to_json("data.json", orient="records", force_ascii=False)
+        except Exception as e:
+            print(f"Exception occurred: {e}")
 
 
 if __name__ == "__main__":
-    # google_maps_geocode_address()
-    # geopy_geocode_address()
-    # geopy_get_bulk_locations()
-    clean_addresses()
+    geocode = GeocodeAddresses()
+    geocode.geocode_all_addresses()
+    # geocode._find_location(address="Cafe DaMe")
